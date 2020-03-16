@@ -688,6 +688,119 @@ def exit_api():
     else:
         return jsonify(message="Server stopped")
 
+
+@app.route("/compare/tasks/<int:task_id1>/<int:task_id2>")
+def ssdeep_compare_tasks(task_id1, task_id2):
+    import pydeep
+    try:
+        report_path = cwd("storage", "analyses", "%d" % task_id1, "reports", "report.json")
+        report_content = json.loads(open(report_path, "rb").read())
+        ssdeep1 = report_content['target']['file']['ssdeep']
+
+        report_path = cwd("storage", "analyses", "%d" % task_id2, "reports", "report.json")
+        report_content = json.loads(open(report_path, "rb").read())
+        ssdeep2 = report_content['target']['file']['ssdeep']
+       
+        result = pydeep.compare(ssdeep1, ssdeep2)
+        return jsonify({"result": True, "data": result})
+    except Exception as e:
+        return jsonify({"result": False, "data": str(e)})
+
+
+@app.route("/compare/md5/<string:md51>/<string:md52>")
+def ssdeep_compare_md5(md51, md52):
+
+    sample = db.find_sample(md5=md51)
+    if not sample:
+        return json_error(404, md51 + " File not found")
+
+    tasks = sorted(
+        list(map(lambda t: t.id, db.list_tasks(sample_id=sample.id)))
+    )
+    task_id1 = tasks[-1]
+
+    sample = db.find_sample(md5=md52)
+    if not sample:
+        return json_error(404, md52 + " File not found")
+
+    tasks = sorted(
+        list(map(lambda t: t.id, db.list_tasks(sample_id=sample.id)))
+    )
+    task_id2 = tasks[-1]
+
+    try:
+        return ssdeep_compare_tasks(task_id1, task_id2)
+
+    except Exception as e:
+        return jsonify({"result": False, "data": str(e)})
+
+
+@app.route("/compare/ssdeep/<string:hash1>/<string:hash2>")
+def ssdeep_compare_ssdeep(hash1, hash2):
+    import pydeep
+    try:
+        result = pydeep.compare(hash1, hash2)
+        return jsonify({"result": True, "data": result})
+    except Exception as e:
+        return jsonify({"result": False, "data": str(e)})
+
+
+def cache_ssdeep():
+    import ijson
+
+    ssdeep_path = cwd("storage") + '/ssdeep.json'
+    fileobjs = list()
+
+    if not os.path.exists(ssdeep_path):
+        for curdir in os.listdir(cwd("storage", "analyses")):
+            report_path = os.path.join(cwd("storage", "analyses"), curdir, "reports/report.json")
+            print (report_path)
+            if os.path.exists(report_path):
+                
+                obj = ijson.items(open(report_path), "target.file")
+                for fileobj in obj: break
+                fileobjs.append(fileobj)
+        open(ssdeep_path, "w").write(json.dumps(fileobjs))
+
+    fileobjs = json.loads(open(ssdeep_path).read())
+    return fileobjs
+
+
+# 10 results each page
+@app.route("/search/<string:md5>")
+@app.route("/search/<string:md5>/<int:page>")
+def search(md5, page=0):
+    import pydeep
+
+    if not md5: 
+        return jsonify({"result": False, "msg": "File not found"})
+
+    fileobjs = cache_ssdeep()
+    results = list()
+    search_ssdeep = ""
+
+    for fileobj in fileobjs:
+        if "md5" in fileobj.keys() and fileobj['md5'] == md5:
+            search_ssdeep = fileobj['ssdeep']
+    if not search_ssdeep:
+        return jsonify({"result": False, "msg": "No such file:" + str(md5)})
+
+    for fileobj in fileobjs:
+        if "ssdeep" in fileobj.keys():
+            score = pydeep.compare(search_ssdeep, fileobj['ssdeep'])
+            results.append((score, fileobj))
+
+    results = sorted(results, key=lambda x:x[0])[::-1]
+
+    start = (page-1)*10
+    end = (page)*10
+
+    if 0 < start < len(results):
+        return jsonify({"result": True, "data": results[start: end]})
+    else:
+        return jsonify({"result": True, "data": results[0: 10]})
+
+
 @app.errorhandler(401)
 def api_auth_required(error):
     return json_error(
